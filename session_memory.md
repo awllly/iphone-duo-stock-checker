@@ -1,7 +1,7 @@
 # Session Memory — iPhone Duo Stock Checker
 
 Last updated: 2026-10-24
-Status: deployed to https://github.com/awllly/iphone-duo-stock-checker and verified on GitHub Actions. The required `NTFY_TOPIC` secret is not yet configured because the local fine-grained PAT cannot write Actions secrets.
+Status: deployed to https://github.com/awllly/iphone-duo-stock-checker and verified end-to-end. `NTFY_TOPIC` is configured, and a test notification was accepted by ntfy from GitHub Actions.
 
 This file is the handoff context for a new AI agent or developer. Read it before changing anything.
 
@@ -32,6 +32,7 @@ Deployed and verified:
 - The run created the `state` branch, which contains only `state.json`:
   `{"alerted": {}, "failures": 0, "pickup": {}, "schema": 1}`.
 - A temporary `push` trigger was added for that verification run and then removed. The workflow is back to schedule + `workflow_dispatch` only.
+- GitHub Actions run `40066573794` (`ntfy smoke test`) succeeded in 6 seconds. The log shows `NTFY_TOPIC: ***` and `test notification sent`, confirming the secret is wired correctly and ntfy accepted the push. A temporary `.github/workflows/ntfy-smoke.yml` was used and then removed.
 - Python 3.9-compatible, stdlib-only checker (`urllib`, `json`, `dataclasses`, `unittest`). No `requirements.txt`, no pip install step.
 - Apple pickup fetcher with block detection and one retry.
 - Parser with strict unknown-value handling.
@@ -46,11 +47,11 @@ Deployed and verified:
 
 Outstanding:
 
-- **`NTFY_TOPIC` secret is not set.** The authenticated fine-grained PAT can push contents but returns 403 for Actions secrets, variables, permissions, and workflow dispatch. Until this is fixed, a stock alert will fail at the notification step (the run exits 1 and does not save state).
+- Confirm with the user that the test notification actually appeared on their iPhone.
 - No real in-stock event has been observed, so the "available" fixture is synthetic.
 - Delivery ETA is not implemented and has no known working endpoint.
 - No Healthchecks.io check created yet (code supports `HEALTHCHECK_URL`).
-- `gh workflow run` and `gh secret set` do not work with the current PAT. The scheduled cron runs independently of the token.
+- The authenticated fine-grained PAT can push contents but still returns 403 for Actions secrets, variables, permissions, and workflow dispatch. Use the web UI for those. The scheduled cron runs independently of the token.
 
 ## 3. Verified external facts (2026-10-24)
 
@@ -200,16 +201,13 @@ Workflow mechanics:
 
 GitHub configuration:
 
-- Secret `NTFY_TOPIC` (required, **not currently set**): the user supplied a plain topic value. Add it at
-  `https://github.com/awllly/iphone-duo-stock-checker/settings/secrets/actions` or with an authenticated CLI:
-  `gh secret set NTFY_TOPIC --body "<topic>" --repo awllly/iphone-duo-stock-checker`.
-  **Never commit the topic value to this public repo.**
+- Secret `NTFY_TOPIC` (required, **configured**): the user supplied a plain topic value and added it in the repository settings. A smoke test confirmed ntfy accepts it. **Never commit the topic value to this public repo.**
 - Secret `NTFY_TOKEN` (optional): bearer token if a self-hosted or authenticated ntfy is used.
 - Secret `HEALTHCHECK_URL` (optional): pinged after every successful check.
 - Variable `APPLE_LOCATION` (optional): overrides the ZIP; falls back to `config.json`.
 - `permissions: contents: write` is required for the state branch push and is already set.
 
-The current fine-grained PAT can read workflows and push contents, but cannot write Actions secrets, variables, permissions, or dispatch workflows. Use the web UI for those operations, or re-authenticate with a classic OAuth token:
+The current fine-grained PAT can read workflows and push contents, but cannot write Actions secrets, variables, permissions, or dispatch workflows. This is why verification runs were triggered by temporary `push` workflows instead of `workflow_dispatch`. Use the web UI for those operations, or re-authenticate with a classic OAuth token:
 
 ```sh
 gh auth login -h github.com -s repo,workflow -w
@@ -242,13 +240,11 @@ There is no linter or formatter configured. Keep the code stdlib-only and Python
 
 ## 12. Next steps
 
-1. Add the `NTFY_TOPIC` secret in the GitHub web UI (or re-authenticate first). This is the only thing blocking live alerts.
-2. Subscribe to the same topic in the ntfy iOS app.
-3. Run `python3 check.py --test` locally with `NTFY_TOPIC` exported to confirm the phone receives it, or use the web UI's "Run workflow" with `dry_run: true` to re-verify the fetch.
-4. The cron will run hourly at minute 17 with no further action. Confirm at least one scheduled run succeeds.
-5. Create a Healthchecks.io check pointing its webhook at ntfy so a dead checker is noticed, then add `HEALTHCHECK_URL`.
-6. When the first real alert fires, capture the raw response and replace `tests/fixtures/available.json`.
-7. Phase 2 (only if requested): find a working delivery-ETA source and alert on ETA improvement, not on the mere existence of a date.
+1. Confirm the user received the test notification from run `40066573794` on their iPhone.
+2. The cron runs hourly at minute 17 with no further action. Optionally confirm one scheduled run succeeds.
+3. Create a Healthchecks.io check pointing its webhook at ntfy so a dead checker is noticed, then add `HEALTHCHECK_URL`.
+4. When the first real alert fires, capture the raw response and replace `tests/fixtures/available.json`.
+5. Phase 2 (only if requested): find a working delivery-ETA source and alert on ETA improvement, not on the mere existence of a date.
 
 ## 13. Do not
 
