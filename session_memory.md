@@ -37,6 +37,7 @@ Deployed and verified:
 - GitHub Actions run `40066718153` (manual `workflow_dispatch` by the user, `dry_run=false`) succeeded in 10 seconds: `12 stores returned, 1 within 10.0 mi, 0 available`; state unchanged.
 - Run `40066981712` was a second temporary push-triggered real check; same result, then the push trigger was removed again.
 - The `gh` CLI was re-authenticated via the device flow as `awllly` with a classic OAuth token (scopes `repo`, `workflow`). `gh workflow run` now works: dispatch run `40068724234` (`dry_run=false`) succeeded in 7 seconds with the same result, `0 available`.
+- Dispatch run `40070346150` (after the email feature) succeeded in 8 seconds with the same result, confirming the new code and config load on the runner.
 - Python 3.9-compatible, stdlib-only checker (`urllib`, `json`, `dataclasses`, `unittest`). No `requirements.txt`, no pip install step.
 - Apple pickup fetcher with block detection and one retry.
 - Parser with strict unknown-value handling.
@@ -46,7 +47,7 @@ Deployed and verified:
 - Channel orchestration: ntfy and email are independent; at least one success is enough to record an alert.
 - State load/save with stable key ordering.
 - Hourly GitHub Actions workflow at minute 17, with manual dispatch (`dry_run`, `force`, `send_test`), concurrency guard, and orphan-commit state branch updates.
-- 29 unit tests using fixtures.
+- 30 unit tests using fixtures.
 - ntfy publish verified with HTTP 200 against a throwaway topic.
 - State-branch orphan commit + force-push flow verified in production.
 - Two consecutive live runs produced byte-identical `state.json` (no commit noise).
@@ -252,7 +253,7 @@ python3 check.py --test --dry-run
 NTFY_TOPIC=<topic> ALERT_EMAIL=<address> RESEND_API_KEY=<key> python3 check.py --test
 ```
 
-Useful flags: `--config`, `--state`, `--location`, `--dry-run`, `--force`, `--json`, `--test`. All 29 tests pass on Python 3.9.6.
+Useful flags: `--config`, `--state`, `--location`, `--dry-run`, `--force`, `--json`, `--test`. All 30 tests pass on Python 3.9.6.
 
 There is no linter or formatter configured. Keep the code stdlib-only and Python 3.9 compatible. Avoid `match`, `X | Y` at runtime, and `tomllib`.
 
