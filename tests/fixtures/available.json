@@ -1,0 +1,87 @@
+{
+  "head": {"status": "200", "data": {}},
+  "body": {
+    "storesCount": 4,
+    "location": "03060",
+    "stores": [
+      {
+        "storeName": "Pheasant Lane",
+        "storeNumber": "R354",
+        "city": "Nashua",
+        "state": "NH",
+        "storedistance": 2.23,
+        "storeDistanceWithUnit": "2.23 mi",
+        "partsAvailability": {
+          "MK1H4LL/A": {
+            "storePickEligible": true,
+            "pickupDisplay": "available",
+            "messageTypes": {
+              "regular": {
+                "storeSelectionEnabled": true,
+                "storePickupQuote": "Available today at Apple Pheasant Lane",
+                "storePickupProductTitle": "iPhone Duo 512GB Night Sky",
+                "basePartNumber": "MK1H4"
+              }
+            }
+          }
+        }
+      },
+      {
+        "storeName": "Rockingham Park",
+        "storeNumber": "R095",
+        "city": "Salem",
+        "state": "NH",
+        "storedistance": 9.4,
+        "storeDistanceWithUnit": "9.4 mi",
+        "partsAvailability": {
+          "MK1H4LL/A": {
+            "storePickEligible": true,
+            "pickupDisplay": "available",
+            "messageTypes": {
+              "regular": {
+                "storeSelectionEnabled": true,
+                "storePickupQuote": "Available today",
+                "basePartNumber": "MK1H4"
+              }
+            }
+          }
+        }
+      },
+      {
+        "storeName": "Chestnut Hill",
+        "storeNumber": "R032",
+        "city": "Chestnut Hill",
+        "state": "MA",
+        "storedistance": 38.4,
+        "storeDistanceWithUnit": "38.4 mi",
+        "partsAvailability": {
+          "MK1H4LL/A": {
+            "storePickEligible": true,
+            "pickupDisplay": "available",
+            "messageTypes": {
+              "regular": {
+                "storeSelectionEnabled": true,
+                "storePickupQuote": "Available today",
+                "basePartNumber": "MK1H4"
+              }
+            }
+          }
+        }
+      },
+      {
+        "storeName": "Burlington",
+        "storeNumber": "R582",
+        "city": "Burlington",
+        "state": "MA",
+        "storedistance": 22.1,
+        "storeDistanceWithUnit": "22.1 mi",
+        "partsAvailability": {
+          "MK1H4LL/A": {
+            "storePickEligible": true,
+            "pickupDisplay": "mystery"
+          }
+        }
+      }
+    ]
+  }
+}

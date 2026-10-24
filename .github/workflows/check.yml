@@ -1,0 +1,75 @@
+name: iPhone stock check
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Fetch and report without notifying or saving state"
+        type: boolean
+        default: false
+      force:
+        description: "Alert even if this store was already alerted"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: iphone-stock-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore previous state
+        run: |
+          git fetch --depth=1 origin state || true
+          if git cat-file -e origin/state:state.json 2>/dev/null; then
+            git show origin/state:state.json > state.json
+            cp state.json /tmp/state.prev.json
+            echo "restored state"
+          else
+            echo "no previous state"
+          fi
+
+      - name: Check stock
+        env:
+          APPLE_LOCATION: ${{ vars.APPLE_LOCATION }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+          HEALTHCHECK_URL: ${{ secrets.HEALTHCHECK_URL }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          args=()
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          if [ "$FORCE" = "true" ]; then args+=(--force); fi
+          python3 check.py "${args[@]}"
+
+      - name: Save state
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          if [ ! -f state.json ]; then
+            echo "no state file written"
+            exit 0
+          fi
+          if [ -f /tmp/state.prev.json ] && cmp -s state.json /tmp/state.prev.json; then
+            echo "state unchanged"
+            exit 0
+          fi
+          git config user.name "ipchecker-bot"
+          git config user.email "ipchecker-bot@users.noreply.github.com"
+          git checkout --orphan state-update
+          git rm -rf --cached . > /dev/null
+          git add -f state.json
+          git commit --quiet -m "state: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push --quiet --force origin HEAD:state
+          echo "state branch updated"

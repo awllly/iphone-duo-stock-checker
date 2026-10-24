@@ -1,0 +1,21 @@
+{
+  "product": {
+    "part_number": "MK1H4LL/A",
+    "label": "iPhone Duo 512GB Night Sky (unlocked)",
+    "url": "https://www.apple.com/shop/buy-iphone/iphone-duo/7.6-inch-display-512gb-night-sky-unlocked"
+  },
+  "search": {
+    "location": "03060",
+    "radius_miles": 10.0
+  },
+  "alerts": {
+    "cooldown_hours": 6,
+    "failure_threshold": 3
+  },
+  "ntfy": {
+    "server": "https://ntfy.sh",
+    "topic": "",
+    "priority": 5,
+    "tags": ["iphone", "rotating_light"]
+  }
+}
