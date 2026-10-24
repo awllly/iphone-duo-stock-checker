@@ -13,6 +13,10 @@ on:
         description: "Alert even if this store was already alerted"
         type: boolean
         default: false
+      send_test:
+        description: "Send a test notification to all channels and exit"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -45,13 +49,23 @@ jobs:
           APPLE_LOCATION: ${{ vars.APPLE_LOCATION }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          SMTP_HOST: ${{ vars.SMTP_HOST }}
+          SMTP_PORT: ${{ vars.SMTP_PORT }}
+          SMTP_SECURITY: ${{ vars.SMTP_SECURITY }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           HEALTHCHECK_URL: ${{ secrets.HEALTHCHECK_URL }}
           DRY_RUN: ${{ inputs.dry_run }}
           FORCE: ${{ inputs.force }}
+          SEND_TEST: ${{ inputs.send_test }}
         run: |
           args=()
           if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
           if [ "$FORCE" = "true" ]; then args+=(--force); fi
+          if [ "$SEND_TEST" = "true" ]; then args+=(--test); fi
           python3 check.py "${args[@]}"
 
       - name: Save state

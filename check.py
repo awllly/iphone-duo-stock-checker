@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import html as html_mod
 import json
 import os
 import sys
@@ -9,16 +10,19 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from checker import apple, decide, notify, parse
+from checker import apple, decide, emailer, notify, parse
 from checker import state as state_mod
 from checker.errors import CheckerError, NotifyError
 
 ROOT = Path(__file__).resolve().parent
 TITLE_FAILING = "iPhone stock checker is failing"
+TITLE_TEST = "iPhone stock checker test"
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="Check Apple pickup stock and alert via ntfy")
+    parser = argparse.ArgumentParser(
+        description="Check Apple pickup stock and alert via ntfy and email"
+    )
     parser.add_argument("--config", default=str(ROOT / "config.json"))
     parser.add_argument("--state", default=str(ROOT / "state.json"))
     parser.add_argument("--location", default=None, help="ZIP code (overrides config)")
@@ -32,20 +36,150 @@ def parse_args(argv=None):
 def load_config(path):
     with open(path, encoding="utf-8") as handle:
         config = json.load(handle)
-    for section in ("product", "search", "alerts", "ntfy"):
+    for section in ("product", "search", "alerts", "ntfy", "email"):
         if section not in config:
             raise SystemExit("config.json is missing section %r" % section)
     return config
 
 
-def format_alerts(alerts, label):
-    title = "%s in stock" % label
+def build_settings(config):
+    ntfy_config = config["ntfy"]
+    email_config = config["email"]
+    return {
+        "threshold": int(config["alerts"]["failure_threshold"]),
+        "ntfy": {
+            "enabled": bool(ntfy_config.get("enabled", True)),
+            "server": ntfy_config.get("server") or "https://ntfy.sh",
+            "topic": os.environ.get("NTFY_TOPIC") or ntfy_config.get("topic") or "",
+            "token": os.environ.get("NTFY_TOKEN") or None,
+            "priority": int(ntfy_config.get("priority", 5)),
+            "tags": ntfy_config.get("tags") or None,
+        },
+        "email": {
+            "enabled": bool(email_config.get("enabled", False)),
+            "provider": (email_config.get("provider") or "resend").lower(),
+            "from": os.environ.get("EMAIL_FROM") or email_config.get("from") or "",
+            "to": os.environ.get("ALERT_EMAIL") or email_config.get("to") or "",
+            "api_key": os.environ.get("RESEND_API_KEY") or "",
+            "smtp_host": os.environ.get("SMTP_HOST") or email_config.get("smtp_host") or "",
+            "smtp_port": int(
+                os.environ.get("SMTP_PORT") or email_config.get("smtp_port") or 465
+            ),
+            "smtp_security": (
+                os.environ.get("SMTP_SECURITY")
+                or email_config.get("smtp_security")
+                or ""
+            ).lower(),
+            "smtp_username": os.environ.get("SMTP_USERNAME") or "",
+            "smtp_password": os.environ.get("SMTP_PASSWORD") or "",
+        },
+    }
+
+
+def alert_lines(alerts):
     lines = []
     for alert in alerts:
         quote = alert.store.quote or "available"
-        lines.append("- %s (%.1f mi): %s" % (alert.store.name, alert.store.distance_miles, quote))
-    message = "\n".join(lines) + "\n\nTap to open Apple and order."
+        lines.append(
+            "- %s (%.1f mi): %s"
+            % (alert.store.name, alert.store.distance_miles, quote)
+        )
+    return lines
+
+
+def format_alerts(alerts, label):
+    title = "%s in stock" % label
+    message = "\n".join(alert_lines(alerts)) + "\n\nTap to open Apple and order."
     return title, message
+
+
+def format_email_html(alerts, label, product_url):
+    items = "".join(
+        "<li><strong>%s</strong> (%.1f mi) &mdash; %s</li>"
+        % (
+            html_mod.escape(alert.store.name),
+            alert.store.distance_miles,
+            html_mod.escape(alert.store.quote or "available"),
+        )
+        for alert in alerts
+    )
+    return (
+        '<html><body style="font-family:-apple-system,Helvetica,Arial,sans-serif;'
+        'font-size:16px;color:#111;">'
+        "<p><strong>%s</strong> is available for pickup:</p>"
+        "<ul>%s</ul>"
+        '<p><a href="%s" style="display:inline-block;padding:12px 20px;'
+        "background:#0071e3;color:#ffffff;text-decoration:none;border-radius:8px;"
+        '">Buy now</a></p>'
+        "</body></html>"
+    ) % (html_mod.escape(label), items, html_mod.escape(product_url, quote=True))
+
+
+def format_test_html(product_url):
+    return (
+        '<html><body style="font-family:-apple-system,Helvetica,Arial,sans-serif;'
+        'font-size:16px;color:#111;">'
+        "<p>Notifications are working.</p>"
+        '<p><a href="%s" style="display:inline-block;padding:12px 20px;'
+        "background:#0071e3;color:#ffffff;text-decoration:none;border-radius:8px;"
+        '">Open Apple</a></p>'
+        "</body></html>"
+    ) % html_mod.escape(product_url, quote=True)
+
+
+def enabled_channels(settings):
+    names = []
+    if settings["ntfy"]["enabled"]:
+        names.append("ntfy")
+    if settings["email"]["enabled"]:
+        names.append("email")
+    return names
+
+
+def send_channels(settings, title, message, click=None, email_body=None, html_body=None):
+    results = []
+
+    ntfy_settings = settings["ntfy"]
+    if ntfy_settings["enabled"]:
+        try:
+            notify.send(
+                ntfy_settings["server"],
+                ntfy_settings["topic"],
+                title,
+                message,
+                click=click,
+                priority=ntfy_settings["priority"],
+                tags=ntfy_settings["tags"],
+                token=ntfy_settings["token"],
+            )
+            results.append(("ntfy", None))
+        except NotifyError as exc:
+            results.append(("ntfy", exc))
+
+    email_settings = settings["email"]
+    if email_settings["enabled"]:
+        try:
+            emailer.send_email(
+                email_settings,
+                title,
+                email_body if email_body is not None else message,
+                html_body=html_body,
+            )
+            results.append(("email", None))
+        except NotifyError as exc:
+            results.append(("email", exc))
+
+    return results
+
+
+def delivered_channels(results):
+    return [name for name, error in results if error is None]
+
+
+def print_channel_failures(results):
+    for name, error in results:
+        if error is not None:
+            print("%s notification failed: %s" % (name, error), file=sys.stderr)
 
 
 def ping_healthcheck(url):
@@ -78,20 +212,15 @@ def handle_failure(exc, state, args, settings):
     now = datetime.now(timezone.utc)
     if failures >= settings["threshold"] and not args.dry_run:
         if should_send_failure(state, now):
-            try:
-                notify.send(
-                    settings["server"],
-                    settings["topic"],
-                    TITLE_FAILING,
-                    "%d consecutive failures.\nLast error: %s" % (failures, exc),
-                    priority=4,
-                    tags=["warning"],
-                    token=settings["token"],
-                )
+            message = "%d consecutive failures.\nLast error: %s" % (failures, exc)
+            results = send_channels(settings, TITLE_FAILING, message)
+            print_channel_failures(results)
+            delivered = delivered_channels(results)
+            if delivered:
                 state["failure_alerted_at"] = now.isoformat(timespec="seconds")
-                print("failure notification sent")
-            except NotifyError as notify_exc:
-                print("failure notification failed: %s" % notify_exc, file=sys.stderr)
+                print("failure notification sent via %s" % ", ".join(delivered))
+            elif not results:
+                print("failure notification skipped: no channels enabled", file=sys.stderr)
 
     if not args.dry_run:
         state_mod.save(args.state, state)
@@ -108,35 +237,32 @@ def main(argv=None):
     location = args.location or os.environ.get("APPLE_LOCATION") or config["search"]["location"]
     radius = float(config["search"]["radius_miles"])
     cooldown = float(config["alerts"]["cooldown_hours"])
-
-    settings = {
-        "server": config["ntfy"].get("server") or "https://ntfy.sh",
-        "topic": os.environ.get("NTFY_TOPIC") or config["ntfy"].get("topic"),
-        "token": os.environ.get("NTFY_TOKEN") or None,
-        "priority": int(config["ntfy"].get("priority", 5)),
-        "tags": config["ntfy"].get("tags") or None,
-        "threshold": int(config["alerts"]["failure_threshold"]),
-    }
+    settings = build_settings(config)
 
     if args.test:
+        channels = enabled_channels(settings)
         if args.dry_run:
-            print("would send a test notification to %s" % settings["server"])
+            print("would send a test notification via %s" % (", ".join(channels) or "no channels"))
             return 0
-        try:
-            notify.send(
-                settings["server"],
-                settings["topic"],
-                "iPhone stock checker test",
-                "Notifications are working.",
-                click=product_url,
-                priority=settings["priority"],
-                tags=settings["tags"],
-                token=settings["token"],
-            )
-        except NotifyError as exc:
-            print("test notification failed: %s" % exc, file=sys.stderr)
+        message = "Notifications are working."
+        results = send_channels(
+            settings,
+            TITLE_TEST,
+            message,
+            click=product_url,
+            email_body=message + "\n\nBuy now: " + product_url,
+            html_body=format_test_html(product_url),
+        )
+        print_channel_failures(results)
+        delivered = delivered_channels(results)
+        failed = [name for name, error in results if error is not None]
+        if not delivered:
+            print("test notification failed on all channels", file=sys.stderr)
             return 1
-        print("test notification sent")
+        print("test notification sent via %s" % ", ".join(delivered))
+        if failed:
+            print("test failed on: %s" % ", ".join(failed), file=sys.stderr)
+            return 1
         return 0
 
     state = state_mod.load(args.state)
@@ -196,26 +322,35 @@ def main(argv=None):
 
     if alerts:
         title, message = format_alerts(alerts, label)
+        email_body = "\n".join(alert_lines(alerts)) + "\n\nBuy now: " + product_url
+        html_body = format_email_html(alerts, label, product_url)
         if args.dry_run:
-            print("[dry-run] would send %r to ntfy:\n%s" % (title, message), file=human)
+            channels = ", ".join(enabled_channels(settings)) or "no channels"
+            print(
+                "[dry-run] would send %r via %s:\n%s" % (title, channels, message),
+                file=human,
+            )
         else:
-            try:
-                notify.send(
-                    settings["server"],
-                    settings["topic"],
-                    title,
-                    message,
-                    click=product_url,
-                    priority=settings["priority"],
-                    tags=settings["tags"],
-                    token=settings["token"],
-                )
-            except NotifyError as exc:
-                print("notification failed: %s" % exc, file=sys.stderr)
+            results = send_channels(
+                settings,
+                title,
+                message,
+                click=product_url,
+                email_body=email_body,
+                html_body=html_body,
+            )
+            print_channel_failures(results)
+            delivered = delivered_channels(results)
+            if not delivered:
+                print("all notification channels failed", file=sys.stderr)
                 return 1
             print(
-                "notification sent for %d store(s): %s"
-                % (len(alerts), ", ".join(alert.store.name for alert in alerts)),
+                "notification sent via %s for %d store(s): %s"
+                % (
+                    ", ".join(delivered),
+                    len(alerts),
+                    ", ".join(alert.store.name for alert in alerts),
+                ),
                 file=human,
             )
     elif not args.json:

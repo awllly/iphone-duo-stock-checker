@@ -13,9 +13,19 @@
     "failure_threshold": 3
   },
   "ntfy": {
+    "enabled": true,
     "server": "https://ntfy.sh",
     "topic": "",
     "priority": 5,
     "tags": ["iphone", "rotating_light"]
+  },
+  "email": {
+    "enabled": true,
+    "provider": "resend",
+    "from": "iPhone Stock Checker <onboarding@resend.dev>",
+    "to": "",
+    "smtp_host": "",
+    "smtp_port": 465,
+    "smtp_security": ""
   }
 }

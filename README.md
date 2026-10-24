@@ -1,6 +1,6 @@
 # iPhone Duo Stock Checker
 
-Hourly Apple Store stock check for **iPhone Duo 512 GB Night Sky (unlocked)**, within **10 miles of ZIP 03060**, with push alerts to an iPhone via [ntfy](https://ntfy.sh). Runs entirely on the GitHub Actions free tier. No servers, no database, no dependencies.
+Hourly Apple Store stock check for **iPhone Duo 512 GB Night Sky (unlocked)**, within **10 miles of ZIP 03060**, with push alerts to an iPhone via [ntfy](https://ntfy.sh) and email via [Resend](https://resend.com). Runs entirely on the GitHub Actions and Resend free tiers. No servers, no database, no dependencies.
 
 ## What it watches
 
@@ -12,7 +12,7 @@ Hourly Apple Store stock check for **iPhone Duo 512 GB Night Sky (unlocked)**, w
 | Radius | 10 miles |
 | Signal | In-store pickup availability |
 | Schedule | Hourly at minute 17 |
-| Alert channel | ntfy, plain secret topic |
+| Alert channels | ntfy (push) + Resend (email) |
 
 Online delivery is intentionally not monitored in v1. Apple's delivery endpoint currently returns HTTP 541, and delivery dates alone are too noisy to alert on.
 
@@ -23,10 +23,12 @@ Online delivery is intentionally not monitored in v1. Apple's delivery endpoint 
    `https://www.apple.com/shop/retail/pickup-message?parts.0=MK1H4LL/A&location=03060`
 3. The response is parsed into stores, distances, and availability.
 4. A store triggers an alert when it becomes available, when a new store appears, or after a 6-hour reminder cooldown.
-5. One batched ntfy notification is sent with a deep link to the buy page.
+5. One batched ntfy notification and one email are sent, both linking to the buy page.
 6. If `state.json` changed, it is force-pushed as a single commit to the `state` branch.
 
-A failed or blocked check is treated as **unknown**, never as "out of stock." After 3 consecutive failures, it sends an "iPhone stock checker is failing" alert (at most once per 24 hours).
+A failed or blocked check is treated as **unknown**, never as "out of stock." After 3 consecutive failures, it sends an "iPhone stock checker is failing" alert (at most once per 24 hours) through both channels.
+
+Delivery is best-effort per channel: if at least one channel succeeds, the alert is recorded and will not repeat. Failed channels are logged. If both fail, state is not advanced and the next run retries.
 
 ## Setup
 
@@ -44,6 +46,31 @@ gh secret set NTFY_TOPIC --body "$(python3 -c 'import secrets;print(secrets.toke
 ```
 
 Subscribe to the same topic in the ntfy iOS app. Treat the topic name as a password: on ntfy.sh, anyone who knows it can read your alerts.
+
+### Email via Resend
+
+Sign up at [resend.com](https://resend.com) using the address that should receive alerts, then create an API key with **Sending access**:
+
+```sh
+gh secret set ALERT_EMAIL --body "you@example.com"
+gh secret set RESEND_API_KEY --body "<resend-api-key>"
+```
+
+Without a verified domain, Resend only allows `onboarding@resend.dev` as the sender and only delivers to the account email. That sender is the default in `config.json`. To deliver to a different address, verify a domain in Resend and override the sender:
+
+```sh
+gh secret set EMAIL_FROM --body "iPhone Stock Checker <alerts@your-domain>"
+```
+
+Verify end-to-end with a one-time test:
+
+```sh
+gh workflow run check.yml -f send_test=true
+```
+
+The test fails if either enabled channel fails, so a green run means both delivered.
+
+SMTP is also supported: set `"provider": "smtp"` in `config.json`, add `SMTP_HOST`, `SMTP_PORT`, and `SMTP_SECURITY` as repository variables, and add `SMTP_USERNAME` and `SMTP_PASSWORD` as secrets. Port 465 uses implicit TLS; port 587 uses STARTTLS.
 
 Optional configuration:
 
@@ -66,7 +93,7 @@ Requires Python 3.9+ and nothing else.
 ```sh
 python3 -m unittest discover -s tests -v
 python3 check.py --dry-run
-NTFY_TOPIC=<topic> python3 check.py --test
+NTFY_TOPIC=<topic> ALERT_EMAIL=<address> RESEND_API_KEY=<key> python3 check.py --test
 ```
 
 Useful flags:
@@ -76,7 +103,7 @@ Useful flags:
 | `--dry-run` | Fetch and report without notifying, saving state, or pinging Healthchecks |
 | `--force` | Alert even if the store was already alerted |
 | `--json` | Print machine-readable results to stdout |
-| `--test` | Send a test notification and exit |
+| `--test` | Send a test notification to every configured channel and exit |
 | `--location ZIP` | Override the configured ZIP |
 | `--state PATH` | Use a different state file |
 | `--config PATH` | Use a different config file |
@@ -95,15 +122,25 @@ Useful flags:
   "search": { "location": "03060", "radius_miles": 10.0 },
   "alerts": { "cooldown_hours": 6, "failure_threshold": 3 },
   "ntfy": {
+    "enabled": true,
     "server": "https://ntfy.sh",
     "topic": "",
     "priority": 5,
     "tags": ["iphone", "rotating_light"]
+  },
+  "email": {
+    "enabled": true,
+    "provider": "resend",
+    "from": "iPhone Stock Checker <onboarding@resend.dev>",
+    "to": "",
+    "smtp_host": "",
+    "smtp_port": 465,
+    "smtp_security": ""
   }
 }
 ```
 
-`NTFY_TOPIC` takes precedence over `ntfy.topic`. `APPLE_LOCATION` takes precedence over `search.location`.
+`NTFY_TOPIC` takes precedence over `ntfy.topic`. `APPLE_LOCATION` takes precedence over `search.location`. `ALERT_EMAIL`, `EMAIL_FROM`, `RESEND_API_KEY`, and the `SMTP_*` variables override the email section. Set `"ntfy": {"enabled": false}` to use email only; set `"email": {"enabled": false}` to disable email. An empty `smtp_security` infers implicit TLS on port 465 and STARTTLS otherwise.
 
 To watch a different model, update `part_number`, `label`, and `url`. Retrieve the part number from the product page's embedded JSON; the unlocked variant is the one ending in `LL/A` whose JSON-LD SKU includes `+unlocked`. This build supports one part number at a time.
 
@@ -131,6 +168,11 @@ The branch is force-pushed as a single orphan commit and only updated when the f
 | `check failed ... HTTP 541` | Apple blocked the request or the endpoint changed. The checker uses `/shop/retail/pickup-message`; do not switch to `/shop/fulfillment-messages`, which is blocked. |
 | No notifications for days | Confirm `NTFY_TOPIC` matches the app subscription and run `python3 check.py --test`. |
 | `NTFY_TOPIC is not set` | The secret is missing or the local env var is unset. |
+| `RESEND_API_KEY is not set` | The Resend secret is missing. |
+| `Resend returned HTTP 403 ... own email address` | Resend test mode only delivers to the account email. Sign up with that address or verify a domain. |
+| `Resend returned HTTP 401` | The API key is invalid or lacks sending permission. |
+| Email does not arrive | Check spam, confirm `ALERT_EMAIL`, and run `gh workflow run check.yml -f send_test=true`. |
+| `all notification channels failed` | Both ntfy and email failed; state was not advanced. Check the per-channel errors. |
 | State branch does not update | This is expected when nothing changed. Check the "state unchanged" log line. |
 | Alerts repeat every 6 hours | That is the reminder cooldown in `alerts.cooldown_hours`. |
 | Only one store is checked | Only Pheasant Lane is within 10 miles of 03060. Increase `radius_miles` to include more. |
@@ -143,6 +185,7 @@ The branch is force-pushed as a single orphan commit and only updated when the f
 - The in-stock response shape has not yet been observed live; the parser is strict and will fail loudly on unrecognized values instead of guessing.
 - The repo is public and `config.json` contains ZIP 03060. Move it to the `APPLE_LOCATION` variable if that matters.
 - ntfy.sh topics are public to anyone who knows the name; the random name is the only secret.
+- Email can land in spam. Resend test-mode mail is limited to the account address, and unverified-domain mail uses `onboarding@resend.dev`.
 
 ## Layout
 
@@ -153,6 +196,7 @@ checker/apple.py               Apple pickup fetch and error handling
 checker/parse.py               Response parsing
 checker/decide.py              Alert and cooldown logic
 checker/notify.py              ntfy publishing
+checker/emailer.py             Resend and SMTP email delivery
 checker/state.py               State persistence
 tests/                         Unit tests and fixtures
 .github/workflows/check.yml    Hourly workflow

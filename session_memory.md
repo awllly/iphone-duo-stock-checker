@@ -1,7 +1,7 @@
 # Session Memory — iPhone Duo Stock Checker
 
 Last updated: 2026-10-24
-Status: deployed to https://github.com/awllly/iphone-duo-stock-checker and verified end-to-end. `NTFY_TOPIC` is configured, and a test notification was accepted by ntfy from GitHub Actions.
+Status: deployed to https://github.com/awllly/iphone-duo-stock-checker and verified end-to-end for ntfy. Email via Resend was added on 2026-10-24; `ALERT_EMAIL` is configured, but `RESEND_API_KEY` still needs to be added and the email path verified.
 
 This file is the handoff context for a new AI agent or developer. Read it before changing anything.
 
@@ -16,6 +16,7 @@ User requirements, as confirmed:
 - Wants both in-store pickup and online delivery awareness. **v1 is pickup only**; delivery was explicitly deferred.
 - Hosting: **GitHub Actions**, free tier, **public repo** is acceptable.
 - Alerts: **ntfy**, one iPhone, **plain secret topic** (no ntfy account/token required, though token support exists).
+- Alerts: also **email via Resend** to **awly.code@gmail.com**, sent alongside ntfy. Both channels are kept. Failure alerts go to both. Delivery is best-effort per channel.
 - Schedule: **once per hour**. Job execution should finish well under a minute (detection latency is up to one hour by design).
 - State persistence: a dedicated **`state` branch** is fine.
 - Just Apple. No Best Buy or carrier inventory.
@@ -41,9 +42,11 @@ Deployed and verified:
 - Parser with strict unknown-value handling.
 - Alert decision logic: new store, 6-hour reminder cooldown, force mode.
 - ntfy publisher with title, priority, tags, click URL, and a "Buy now" action.
+- Resend email publisher with plain text and HTML (buy button), plus optional SMTP backend.
+- Channel orchestration: ntfy and email are independent; at least one success is enough to record an alert.
 - State load/save with stable key ordering.
-- Hourly GitHub Actions workflow at minute 17, with manual dispatch (`dry_run`, `force`), concurrency guard, and orphan-commit state branch updates.
-- 14 unit tests using fixtures.
+- Hourly GitHub Actions workflow at minute 17, with manual dispatch (`dry_run`, `force`, `send_test`), concurrency guard, and orphan-commit state branch updates.
+- 29 unit tests using fixtures.
 - ntfy publish verified with HTTP 200 against a throwaway topic.
 - State-branch orphan commit + force-push flow verified in production.
 - Two consecutive live runs produced byte-identical `state.json` (no commit noise).
@@ -54,6 +57,8 @@ Outstanding:
 - No real in-stock event has been observed, so the "available" fixture is synthetic.
 - Delivery ETA is not implemented and has no known working endpoint.
 - No Healthchecks.io check created yet (code supports `HEALTHCHECK_URL`).
+- `RESEND_API_KEY` is not set yet. Until it is, email sends fail and are logged; ntfy still delivers and state still advances because delivery is best-effort.
+- Email has not been verified end-to-end. Add the key, then dispatch `send_test=true`.
 - No remaining tooling blocker: `gh` is authenticated with `repo` and `workflow` scopes, so dispatch, secret/variable management, and content pushes all work.
 
 ## 3. Verified external facts (2026-10-24)
@@ -90,6 +95,8 @@ These were confirmed with live read-only requests. Trust them, but re-verify if 
 8. **Alert semantics.** Alert when a store becomes available, when a new store appears, or after a 6-hour cooldown while still available. A store that goes unavailable and returns alerts again.
 9. **One batched notification per run**, not one per store, to stay well within ntfy.sh limits.
 10. **v1 is pickup only.** Delivery alerts would fire constantly if based on "a date exists"; the eventual rule should be "ETA improves below a threshold."
+11. **Dual channels, best-effort.** ntfy remains primary; Resend email is a backup. If one channel fails and the other succeeds, the alert is recorded and the failure is logged. If both fail, state is not saved, so the next hourly run retries. This avoids hourly ntfy spam when email is misconfigured.
+12. **Resend over SMTP.** Resend's HTTPS API avoids outbound SMTP blocking on CI runners and needs no app password. SMTP remains implemented as an option.
 
 ## 5. Architecture and data flow
 
@@ -100,8 +107,8 @@ GitHub Actions (hourly, :17)
        -> checker.apple.fetch_pickup([MK1H4LL/A], location)
        -> checker.parse.parse_pickup(...)
        -> checker.decide.evaluate(snapshot, state, radius, cooldown)
-       -> checker.notify.send(...) only if alerts
-       -> checker.state.save(...)
+       -> if alerts: checker.notify.send(...) AND checker.emailer.send_email(...)
+       -> checker.state.save(...) if at least one channel succeeded
        -> ping HEALTHCHECK_URL on success
   -> compare state.json to previous bytes
   -> if changed: orphan commit state.json and force-push to `state`
@@ -122,15 +129,18 @@ Alert condition inside `decide.evaluate`:
 | Path | Responsibility |
 |---|---|
 | `check.py` | CLI entry point, config loading, orchestration, summaries, failure alerts, healthcheck ping, `--test` |
-| `config.json` | Part number, label, product URL, location, radius, cooldown, failure threshold, ntfy defaults |
+| `config.json` | Part number, label, product URL, location, radius, cooldown, failure threshold, ntfy and email defaults |
 | `checker/apple.py` | HTTP fetch, headers, retry-once, 403/429/541 → `BlockedError`, non-JSON → `ParseError` |
 | `checker/parse.py` | Pure parsing of `body.stores` into `Store`/`Snapshot`; distance fallback; unknown display tracking |
 | `checker/decide.py` | Pure state-diff logic returning `Alert` objects and the next state |
 | `checker/notify.py` | ntfy JSON publish to server root; optional bearer token |
+| `checker/emailer.py` | Resend HTTPS API and SMTP delivery; MIME/HTML builders; `NotifyError` on failure |
 | `checker/state.py` | Atomic state load/save, stable sorted JSON, deep-copied defaults |
 | `checker/errors.py` | `CheckerError`, `BlockedError`, `FetchError`, `ParseError`, `NotifyError` |
 | `tests/test_parse.py` | Fixture parsing, unknown values, distance fallback, ineligible precedence |
 | `tests/test_decide.py` | Radius, first alert, quiet rerun, cooldown, new store, disappearance/reappearance, force |
+| `tests/test_emailer.py` | MIME/HTML builders, Resend payload, config validation |
+| `tests/test_channels.py` | Env overrides, enabling/disabling channels, partial and total delivery failure |
 | `tests/fixtures/unavailable.json` | Realistic unavailable response, includes one unknown display (R582) |
 | `tests/fixtures/available.json` | **Synthetic** available response; no real in-stock capture exists yet |
 | `.github/workflows/check.yml` | Hourly schedule, dispatch inputs, state restore/commit, secrets wiring |
@@ -177,13 +187,14 @@ Workflow mechanics:
 ## 8. Runtime and failure behavior
 
 - Successful check, no availability: prints a summary, writes state, pings healthcheck, exits 0.
-- Successful check, availability: sends one ntfy message listing all newly available stores, then writes state and pings healthcheck.
+- Successful check, availability: sends one ntfy message and one email listing all newly available stores, then writes state and pings healthcheck.
 - Fetch blocked (403/429/541): no retry, increments failures, preserves last known availability.
 - Transient network/HTTP error: one retry after 2 seconds.
-- 3 consecutive failures: sends `"iPhone stock checker is failing"` at priority 4, at most once per 24 hours.
-- Notification failure: exits 1 and does **not** save state, so the next hourly run retries the alert.
-- `--dry-run`: never notifies, never writes state, never pings healthcheck.
-- `--test`: publishes a test notification and exits without fetching.
+- 3 consecutive failures: sends `"iPhone stock checker is failing"` to both channels, at most once per 24 hours.
+- Partial notification failure: logs the failed channel, records the alert if the other channel succeeded, exits 0.
+- Total notification failure: exits 1 and does **not** save state, so the next hourly run retries the alert.
+- `--dry-run`: never notifies, never writes state, never pings healthcheck; prints enabled channels.
+- `--test`: sends a test to every enabled channel and exits without fetching. The workflow exposes this as `send_test=true`.
 - Unknown `pickupDisplay` values are printed to stderr; if all values are unknown, the run is treated as a failure.
 
 ## 9. Configuration and secrets
@@ -197,15 +208,26 @@ Workflow mechanics:
 - `search.radius_miles`: `10.0`
 - `alerts.cooldown_hours`: `6`
 - `alerts.failure_threshold`: `3`
+- `ntfy.enabled`: `true`
 - `ntfy.server`: `https://ntfy.sh`
 - `ntfy.topic`: empty; prefer the secret
 - `ntfy.priority`: `5`
 - `ntfy.tags`: `["iphone", "rotating_light"]`
+- `email.enabled`: `true`
+- `email.provider`: `resend`
+- `email.from`: `iPhone Stock Checker <onboarding@resend.dev>` (overridable by `EMAIL_FROM`)
+- `email.to`: empty; `ALERT_EMAIL` is required
+- `email.smtp_host`, `smtp_port` (465), `smtp_security` (empty = infer: implicit TLS on 465, STARTTLS otherwise): only used when provider is `smtp`
 
 GitHub configuration:
 
 - Secret `NTFY_TOPIC` (required, **configured**): the user supplied a plain topic value and added it in the repository settings. A smoke test confirmed ntfy accepts it. **Never commit the topic value to this public repo.**
 - Secret `NTFY_TOKEN` (optional): bearer token if a self-hosted or authenticated ntfy is used.
+- Secret `ALERT_EMAIL` (**configured**): `awly.code@gmail.com`.
+- Secret `RESEND_API_KEY` (**required, not set yet**): create at resend.com with **Sending access**. Until set, email delivery fails and is logged.
+- Secret `EMAIL_FROM` (optional): overrides the sender; defaults to `onboarding@resend.dev`, which Resend test mode requires.
+- Secret `SMTP_USERNAME` / `SMTP_PASSWORD` (optional): only for `provider: smtp`.
+- Variables `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURITY` (optional): only for `provider: smtp`.
 - Secret `HEALTHCHECK_URL` (optional): pinged after every successful check.
 - Variable `APPLE_LOCATION` (optional): overrides the ZIP; falls back to `config.json`.
 - `permissions: contents: write` is required for the state branch push and is already set.
@@ -216,6 +238,7 @@ Manual dispatch:
 
 ```sh
 gh workflow run check.yml --repo awllly/iphone-duo-stock-checker -f dry_run=false -f force=false
+gh workflow run check.yml --repo awllly/iphone-duo-stock-checker -f send_test=true
 gh run list --repo awllly/iphone-duo-stock-checker --limit 1
 ```
 
@@ -225,10 +248,11 @@ gh run list --repo awllly/iphone-duo-stock-checker --limit 1
 python3 -m unittest discover -s tests -v
 python3 check.py --dry-run
 python3 check.py --dry-run --json
-NTFY_TOPIC=<topic> python3 check.py --test
+python3 check.py --test --dry-run
+NTFY_TOPIC=<topic> ALERT_EMAIL=<address> RESEND_API_KEY=<key> python3 check.py --test
 ```
 
-Useful flags: `--config`, `--state`, `--location`, `--dry-run`, `--force`, `--json`, `--test`.
+Useful flags: `--config`, `--state`, `--location`, `--dry-run`, `--force`, `--json`, `--test`. All 29 tests pass on Python 3.9.6.
 
 There is no linter or formatter configured. Keep the code stdlib-only and Python 3.9 compatible. Avoid `match`, `X | Y` at runtime, and `tomllib`.
 
@@ -243,14 +267,18 @@ There is no linter or formatter configured. Keep the code stdlib-only and Python
 - **ntfy.sh privacy:** A plain topic is public to anyone who knows the name; the random name is the only secret. ntfy.sh also has daily message caps, which this design stays far below.
 - **State branch force-push:** Intentional. Do not add branch protection that blocks force-pushes to `state`.
 - **Local auth:** `gh` uses a classic OAuth token with `repo` and `workflow` scopes. If it is ever replaced by a fine-grained PAT, dispatch and secret writes may start returning 403 again; content pushes alone are not sufficient.
+- **Resend test mode:** without a verified domain, Resend only sends from `onboarding@resend.dev` to the account's own email. The account must be created with `awly.code@gmail.com`, or a domain must be verified.
+- **Email deliverability:** Resend/recipient filtering can put alerts in spam. The email is a backup; ntfy is primary.
+- **Email dependency:** Resend is a third-party HTTP dependency. If it is down, ntfy still works; if ntfy is down, email still works.
 
 ## 12. Next steps
 
-1. No action needed on notifications: the secret is verified, and manual dispatch now works via `gh workflow run`.
-2. The cron runs hourly at minute 17 with no further action. Optionally confirm scheduled runs are succeeding.
-3. Create a Healthchecks.io check pointing its webhook at ntfy so a dead checker is noticed, then add `HEALTHCHECK_URL`.
-4. When the first real alert fires, capture the raw response and replace `tests/fixtures/available.json`.
-5. Phase 2 (only if requested): find a working delivery-ETA source and alert on ETA improvement, not on the mere existence of a date.
+1. Add the `RESEND_API_KEY` secret (Sending access) from a Resend account created with `awly.code@gmail.com`.
+2. Dispatch `send_test=true` and confirm both ntfy and email arrive; check spam.
+3. The cron runs hourly at minute 17 with no further action. Optionally confirm scheduled runs are succeeding.
+4. Create a Healthchecks.io check pointing its webhook at ntfy so a dead checker is noticed, then add `HEALTHCHECK_URL`.
+5. When the first real alert fires, capture the raw response and replace `tests/fixtures/available.json`; also capture the email/ntfy pair as a reference.
+6. Phase 2 (only if requested): find a working delivery-ETA source and alert on ETA improvement, not on the mere existence of a date.
 
 ## 13. Do not
 
@@ -259,4 +287,6 @@ There is no linter or formatter configured. Keep the code stdlib-only and Python
 - Do not remove the "unknown display" handling; it is the guard against silent breakage.
 - Do not add third-party dependencies without a strong reason; the job's speed and reliability depend on the stdlib-only design.
 - Do not commit `state.json` to the main branch; it lives only on the `state` branch.
+- Do not commit the Resend API key, the recipient email, or SMTP credentials; they belong in repository secrets.
+- Do not log API keys or full credentials; `NotifyError` messages only include provider status/details.
 - Do not change the schedule without updating this file and the README.
