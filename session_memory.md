@@ -35,6 +35,7 @@ Deployed and verified:
 - GitHub Actions run `40066573794` (`ntfy smoke test`) succeeded in 6 seconds. The log shows `NTFY_TOPIC: ***` and `test notification sent`, confirming the secret is wired correctly and ntfy accepted the push. A temporary `.github/workflows/ntfy-smoke.yml` was used and then removed.
 - GitHub Actions run `40066718153` (manual `workflow_dispatch` by the user, `dry_run=false`) succeeded in 10 seconds: `12 stores returned, 1 within 10.0 mi, 0 available`; state unchanged.
 - Run `40066981712` was a second temporary push-triggered real check; same result, then the push trigger was removed again.
+- The `gh` CLI was re-authenticated via the device flow as `awllly` with a classic OAuth token (scopes `repo`, `workflow`). `gh workflow run` now works: dispatch run `40068724234` (`dry_run=false`) succeeded in 7 seconds with the same result, `0 available`.
 - Python 3.9-compatible, stdlib-only checker (`urllib`, `json`, `dataclasses`, `unittest`). No `requirements.txt`, no pip install step.
 - Apple pickup fetcher with block detection and one retry.
 - Parser with strict unknown-value handling.
@@ -53,7 +54,7 @@ Outstanding:
 - No real in-stock event has been observed, so the "available" fixture is synthetic.
 - Delivery ETA is not implemented and has no known working endpoint.
 - No Healthchecks.io check created yet (code supports `HEALTHCHECK_URL`).
-- The authenticated fine-grained PAT can push contents but still returns 403 for Actions secrets, variables, permissions, and workflow dispatch. Use the web UI for those. The scheduled cron runs independently of the token.
+- No remaining tooling blocker: `gh` is authenticated with `repo` and `workflow` scopes, so dispatch, secret/variable management, and content pushes all work.
 
 ## 3. Verified external facts (2026-10-24)
 
@@ -209,10 +210,13 @@ GitHub configuration:
 - Variable `APPLE_LOCATION` (optional): overrides the ZIP; falls back to `config.json`.
 - `permissions: contents: write` is required for the state branch push and is already set.
 
-The current fine-grained PAT can read workflows and push contents, but cannot write Actions secrets, variables, permissions, or dispatch workflows. This is why verification runs were triggered by temporary `push` workflows instead of `workflow_dispatch`. Use the web UI for those operations, or re-authenticate with a classic OAuth token:
+The `gh` CLI is authenticated as `awllly` with a classic OAuth token (`gho_...`) carrying `repo` and `workflow` scopes. `gh workflow run`, `gh secret list/set`, and `gh variable` all work now. The earlier fine-grained PAT that returned 403 is no longer in use.
+
+Manual dispatch:
 
 ```sh
-gh auth login -h github.com -s repo,workflow -w
+gh workflow run check.yml --repo awllly/iphone-duo-stock-checker -f dry_run=false -f force=false
+gh run list --repo awllly/iphone-duo-stock-checker --limit 1
 ```
 
 ## 10. Local development
@@ -238,12 +242,12 @@ There is no linter or formatter configured. Keep the code stdlib-only and Python
 - **Privacy:** The repo is public and `config.json` contains ZIP 03060. Move it to the `APPLE_LOCATION` repo variable if that becomes a concern.
 - **ntfy.sh privacy:** A plain topic is public to anyone who knows the name; the random name is the only secret. ntfy.sh also has daily message caps, which this design stays far below.
 - **State branch force-push:** Intentional. Do not add branch protection that blocks force-pushes to `state`.
-- **Local PAT limits:** content pushes work, but Actions secrets, variables, permissions, and workflow dispatch return 403. The scheduled workflow runs regardless of the local token.
+- **Local auth:** `gh` uses a classic OAuth token with `repo` and `workflow` scopes. If it is ever replaced by a fine-grained PAT, dispatch and secret writes may start returning 403 again; content pushes alone are not sufficient.
 
 ## 12. Next steps
 
-1. Confirm the user received the test notification from run `40066573794` on their iPhone.
-2. The cron runs hourly at minute 17 with no further action. Optionally confirm one scheduled run succeeds.
+1. No action needed on notifications: the secret is verified, and manual dispatch now works via `gh workflow run`.
+2. The cron runs hourly at minute 17 with no further action. Optionally confirm scheduled runs are succeeding.
 3. Create a Healthchecks.io check pointing its webhook at ntfy so a dead checker is noticed, then add `HEALTHCHECK_URL`.
 4. When the first real alert fires, capture the raw response and replace `tests/fixtures/available.json`.
 5. Phase 2 (only if requested): find a working delivery-ETA source and alert on ETA improvement, not on the mere existence of a date.
