@@ -33,6 +33,8 @@ Deployed and verified:
   `{"alerted": {}, "failures": 0, "pickup": {}, "schema": 1}`.
 - A temporary `push` trigger was added for that verification run and then removed. The workflow is back to schedule + `workflow_dispatch` only.
 - GitHub Actions run `40066573794` (`ntfy smoke test`) succeeded in 6 seconds. The log shows `NTFY_TOPIC: ***` and `test notification sent`, confirming the secret is wired correctly and ntfy accepted the push. A temporary `.github/workflows/ntfy-smoke.yml` was used and then removed.
+- GitHub Actions run `40066718153` (manual `workflow_dispatch` by the user, `dry_run=false`) succeeded in 10 seconds: `12 stores returned, 1 within 10.0 mi, 0 available`; state unchanged.
+- Run `40066981712` was a second temporary push-triggered real check; same result, then the push trigger was removed again.
 - Python 3.9-compatible, stdlib-only checker (`urllib`, `json`, `dataclasses`, `unittest`). No `requirements.txt`, no pip install step.
 - Apple pickup fetcher with block detection and one retry.
 - Parser with strict unknown-value handling.
