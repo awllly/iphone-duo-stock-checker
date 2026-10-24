@@ -1,7 +1,7 @@
 # Session Memory — iPhone Duo Stock Checker
 
 Last updated: 2026-10-24
-Status: code complete and locally verified; not yet committed, pushed, or deployed.
+Status: deployed to https://github.com/awllly/iphone-duo-stock-checker and verified on GitHub Actions. The required `NTFY_TOPIC` secret is not yet configured because the local fine-grained PAT cannot write Actions secrets.
 
 This file is the handoff context for a new AI agent or developer. Read it before changing anything.
 
@@ -22,8 +22,16 @@ User requirements, as confirmed:
 
 ## 2. Current status
 
-Implemented:
+Deployed and verified:
 
+- GitHub repo: `awllly/iphone-duo-stock-checker`, public, default branch `main`.
+- Local `main` is pushed and tracks `origin/main`.
+- GitHub Actions run `40066248564` (push-triggered during setup) succeeded in 8 seconds on 2026-10-24T05:26Z from an Azure runner:
+  `MK1H4LL/A @ 03060: 12 stores returned, 1 within 10.0 mi, 0 available`.
+  This confirms Apple's endpoint works from GitHub's datacenter IP as of that date.
+- The run created the `state` branch, which contains only `state.json`:
+  `{"alerted": {}, "failures": 0, "pickup": {}, "schema": 1}`.
+- A temporary `push` trigger was added for that verification run and then removed. The workflow is back to schedule + `workflow_dispatch` only.
 - Python 3.9-compatible, stdlib-only checker (`urllib`, `json`, `dataclasses`, `unittest`). No `requirements.txt`, no pip install step.
 - Apple pickup fetcher with block detection and one retry.
 - Parser with strict unknown-value handling.
@@ -32,18 +40,17 @@ Implemented:
 - State load/save with stable key ordering.
 - Hourly GitHub Actions workflow at minute 17, with manual dispatch (`dry_run`, `force`), concurrency guard, and orphan-commit state branch updates.
 - 14 unit tests using fixtures.
-- Live dry-run verified against Apple on 2026-10-24: 12 stores returned, 1 within 10 miles, 0 available.
 - ntfy publish verified with HTTP 200 against a throwaway topic.
-- State-branch orphan commit + force-push flow simulated successfully in a temp repo.
+- State-branch orphan commit + force-push flow verified in production.
 - Two consecutive live runs produced byte-identical `state.json` (no commit noise).
 
-Not done:
+Outstanding:
 
-- No git repository initialized in the working directory.
-- Nothing pushed to GitHub; no secrets or repo variables configured.
+- **`NTFY_TOPIC` secret is not set.** The authenticated fine-grained PAT can push contents but returns 403 for Actions secrets, variables, permissions, and workflow dispatch. Until this is fixed, a stock alert will fail at the notification step (the run exits 1 and does not save state).
 - No real in-stock event has been observed, so the "available" fixture is synthetic.
 - Delivery ETA is not implemented and has no known working endpoint.
 - No Healthchecks.io check created yet (code supports `HEALTHCHECK_URL`).
+- `gh workflow run` and `gh secret set` do not work with the current PAT. The scheduled cron runs independently of the token.
 
 ## 3. Verified external facts (2026-10-24)
 
@@ -193,11 +200,20 @@ Workflow mechanics:
 
 GitHub configuration:
 
-- Secret `NTFY_TOPIC` (required): random, unguessable topic name.
+- Secret `NTFY_TOPIC` (required, **not currently set**): the user supplied a plain topic value. Add it at
+  `https://github.com/awllly/iphone-duo-stock-checker/settings/secrets/actions` or with an authenticated CLI:
+  `gh secret set NTFY_TOPIC --body "<topic>" --repo awllly/iphone-duo-stock-checker`.
+  **Never commit the topic value to this public repo.**
 - Secret `NTFY_TOKEN` (optional): bearer token if a self-hosted or authenticated ntfy is used.
 - Secret `HEALTHCHECK_URL` (optional): pinged after every successful check.
 - Variable `APPLE_LOCATION` (optional): overrides the ZIP; falls back to `config.json`.
-- `permissions: contents: write` is required for the state branch push.
+- `permissions: contents: write` is required for the state branch push and is already set.
+
+The current fine-grained PAT can read workflows and push contents, but cannot write Actions secrets, variables, permissions, or dispatch workflows. Use the web UI for those operations, or re-authenticate with a classic OAuth token:
+
+```sh
+gh auth login -h github.com -s repo,workflow -w
+```
 
 ## 10. Local development
 
@@ -222,15 +238,16 @@ There is no linter or formatter configured. Keep the code stdlib-only and Python
 - **Privacy:** The repo is public and `config.json` contains ZIP 03060. Move it to the `APPLE_LOCATION` repo variable if that becomes a concern.
 - **ntfy.sh privacy:** A plain topic is public to anyone who knows the name; the random name is the only secret. ntfy.sh also has daily message caps, which this design stays far below.
 - **State branch force-push:** Intentional. Do not add branch protection that blocks force-pushes to `state`.
+- **Local PAT limits:** content pushes work, but Actions secrets, variables, permissions, and workflow dispatch return 403. The scheduled workflow runs regardless of the local token.
 
 ## 12. Next steps
 
-1. `git init`, commit, and push to a new public GitHub repo.
-2. Set `NTFY_TOPIC`; optionally set `NTFY_TOKEN`, `HEALTHCHECK_URL`, and `APPLE_LOCATION`.
-3. Run the workflow manually with `dry_run: true`, confirm the summary.
-4. Run with `force: false`; confirm the `state` branch is created and contains only `state.json`.
-5. Local `--test` or a live `--force` when stock exists to confirm the alert format and deep link.
-6. Create a Healthchecks.io check pointing its webhook at ntfy so a dead checker is noticed.
+1. Add the `NTFY_TOPIC` secret in the GitHub web UI (or re-authenticate first). This is the only thing blocking live alerts.
+2. Subscribe to the same topic in the ntfy iOS app.
+3. Run `python3 check.py --test` locally with `NTFY_TOPIC` exported to confirm the phone receives it, or use the web UI's "Run workflow" with `dry_run: true` to re-verify the fetch.
+4. The cron will run hourly at minute 17 with no further action. Confirm at least one scheduled run succeeds.
+5. Create a Healthchecks.io check pointing its webhook at ntfy so a dead checker is noticed, then add `HEALTHCHECK_URL`.
+6. When the first real alert fires, capture the raw response and replace `tests/fixtures/available.json`.
 7. Phase 2 (only if requested): find a working delivery-ETA source and alert on ETA improvement, not on the mere existence of a date.
 
 ## 13. Do not
